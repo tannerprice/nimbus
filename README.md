@@ -61,7 +61,7 @@ The topic root is configurable during setup.
 Default topic root:
 
 ```text
-nwr
+nimbus
 ```
 
 ---
