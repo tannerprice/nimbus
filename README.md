@@ -269,7 +269,6 @@ Nimbus handles:
 - automations
 - notifications
 - event dispatching
-- dashboards
 - history
 - alert lifecycle management
 
@@ -279,35 +278,12 @@ Nimbus handles:
 
 - CAP/IPAWS support
 - Tornado polygon mapping
-- Weather radar overlays
 - Custom Lovelace cards
 - Severity classification
 - Media player integration
-- Recorder-backed persistent history
-- Multi-radio support
 - County filtering inside Home Assistant
 - Rich push notifications
 - Alert deduplication and correlation
-
----
-
-# Repository Layout
-
-```text
-repository-root/
-├── README.md
-├── LICENSE
-├── hacs.json
-├── custom_components/
-│   └── nimbus/
-│       ├── __init__.py
-│       ├── manifest.json
-│       ├── const.py
-│       ├── config_flow.py
-│       ├── sensor.py
-│       ├── binary_sensor.py
-│       └── diagnostics.py
-```
 
 ---
 
