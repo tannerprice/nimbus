@@ -14,6 +14,7 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
+from .alerts import ALERTS
 from .const import (
     CONF_HISTORY_LIMIT,
     CONF_TOPIC_ROOT,
@@ -56,6 +57,7 @@ class NimbusRuntimeState:
     alert_active: bool = False
     expired_event_fired: bool = False
 
+    tracked_alerts: dict[str, dict[str, Any]] = field(default_factory=dict)
     history: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=50))
 
 
@@ -80,6 +82,23 @@ class NimbusCoordinator(DataUpdateCoordinator[NimbusRuntimeState]):
     async def _async_update_data(self) -> NimbusRuntimeState:
         self._update_expiry_state()
         return self.data
+
+    def remaining_seconds_for(self, expires_at: str | None) -> int | None:
+        if not expires_at:
+            return None
+
+        expires = dt_util.parse_datetime(expires_at)
+        if expires is None:
+            return None
+
+        if expires.tzinfo is None:
+            expires = dt_util.as_utc(expires)
+
+        return max(0, int((expires - dt_util.utcnow()).total_seconds()))
+
+    def _is_expired(self, expires_at: str | None) -> bool:
+        remaining = self.remaining_seconds_for(expires_at)
+        return remaining is not None and remaining <= 0
 
     @callback
     def handle_status(self, payload: str) -> None:
@@ -118,6 +137,26 @@ class NimbusCoordinator(DataUpdateCoordinator[NimbusRuntimeState]):
         expires_at = alert.get("issue_expiry_utc")
         received_at = alert.get("received_utc") or now
         text = self._build_alert_text(alert)
+
+        definition = ALERTS.get(event_code)
+
+        if definition:
+            self.data.tracked_alerts[event_code] = {
+                "active": True,
+                "event_code": event_code,
+                "name": definition.name,
+                "category": definition.category,
+                "severity": definition.severity,
+                "icon": definition.icon,
+                "color": definition.color,
+                "counties": alert.get("counties", []),
+                "wfo": alert.get("wfo"),
+                "expires_at": expires_at,
+                "received_utc": received_at,
+                "text": text,
+                "raw": alert.get("raw"),
+                "payload": alert,
+            }
 
         self.data.last_alert = alert
         self.data.active_alert = alert
@@ -196,34 +235,31 @@ class NimbusCoordinator(DataUpdateCoordinator[NimbusRuntimeState]):
 
     @callback
     def _update_expiry_state(self) -> bool:
-        if not self.data.alert_active or not self.data.expires_at:
-            return False
+        changed = False
 
-        expires = dt_util.parse_datetime(self.data.expires_at)
-        if expires is None:
-            return False
+        if self.data.alert_active and self.data.expires_at:
+            if self._is_expired(self.data.expires_at):
+                self.data.alert_active = False
+                self.data.active_alert = None
+                changed = True
 
-        if expires.tzinfo is None:
-            expires = dt_util.as_utc(expires)
+                if not self.data.expired_event_fired:
+                    self.data.expired_event_fired = True
+                    self.hass.bus.async_fire(
+                        EVENT_ALERT_EXPIRED,
+                        {
+                            "last_alert": self.data.last_alert,
+                            "expires_at": self.data.expires_at,
+                            "config_entry_id": self.entry.entry_id,
+                        },
+                    )
 
-        if expires <= dt_util.utcnow():
-            self.data.alert_active = False
-            self.data.active_alert = None
+        for code, alert in self.data.tracked_alerts.items():
+            if alert.get("active") and self._is_expired(alert.get("expires_at")):
+                alert["active"] = False
+                changed = True
 
-            if not self.data.expired_event_fired:
-                self.data.expired_event_fired = True
-                self.hass.bus.async_fire(
-                    EVENT_ALERT_EXPIRED,
-                    {
-                        "last_alert": self.data.last_alert,
-                        "expires_at": self.data.expires_at,
-                        "config_entry_id": self.entry.entry_id,
-                    },
-                )
-
-            return True
-
-        return False
+        return changed
 
     def remaining_seconds(self) -> int | None:
         if not self.data.expires_at:
@@ -242,7 +278,10 @@ class NimbusCoordinator(DataUpdateCoordinator[NimbusRuntimeState]):
         return list(self.data.history)
 
     def _build_alert_text(self, alert: dict[str, Any]) -> str:
-        event = alert.get("event_code") or "Unknown"
+        event_code = alert.get("event_code") or "Unknown"
+        definition = ALERTS.get(event_code)
+
+        event_name = definition.name if definition else event_code
         counties = alert.get("counties") or []
         wfo = alert.get("wfo") or "Unknown WFO"
         remaining = alert.get("true_remaining_secs")
@@ -254,9 +293,9 @@ class NimbusCoordinator(DataUpdateCoordinator[NimbusRuntimeState]):
         )
 
         if remaining is not None:
-            return f"{event} from {wfo} for {counties_text}. {remaining} seconds remaining."
+            return f"{event_name} from {wfo} for {counties_text}. {remaining} seconds remaining."
 
-        return f"{event} from {wfo} for {counties_text}."
+        return f"{event_name} from {wfo} for {counties_text}."
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
